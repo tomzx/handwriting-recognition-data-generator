@@ -1,6 +1,5 @@
 import argparse
 import hashlib
-import itertools
 import os
 import random
 import time
@@ -15,7 +14,7 @@ def extract_words(text, word_count):
     Extract a list of words from a text in sequential order.
     :param text: source text, tokenized
     :param word_count: number of words to return
-    :return: list of words
+    :return: list list of words
     """
     text_length = len(text)
 
@@ -44,9 +43,14 @@ def get_character_image(character, glyph_source, glyph_family):
     return glyph_image
 
 def get_glyph_file(glyph, glyph_source, glyph_family = None):
+    """
+    Get the glyph file for a given glyph family, otherwise a random glyph.
+    :param glyph: which glyph should be returned
+    :param glyph_source: the location of glyph files
+    :param glyph_family: the glyph family
+    :return: string path to a glyph file
+    """
     directory = str(ord(glyph))
-    # if directory in get_glyph_file.cache:
-    # Directory in cache variable, pick any
     if glyph_family:
         glyph_file = glyph_family
     else:
@@ -54,20 +58,16 @@ def get_glyph_file(glyph, glyph_source, glyph_family = None):
 
     glyph_file = os.path.join(glyph_source, directory, glyph_file)
     return glyph_file
-    # else:
-    #     # Load directory
-    #     get_glyph_file.cache[directory] = {}
-    #     regex = re.compile(r'[^.]+\.(jpg|png)$')
-    #     glyph_directory = os.path.join(glyph_source, directory)
-    #     files = os.listdir(glyph_directory)
-    #     glyphs = list(filter(lambda x: regex.match(x), files))
-    #
-    #     for glyph in glyphs:
-    #         get_glyph_file.cache[directory][glyph] = None
 
 get_glyph_file.cache = {}
 
 def initialize_glyph_cache(glyph_set, glyph_source):
+    """
+    Initialize the glyph cache variable given a glyph set and the location of glyph files.
+    :param glyph_set: the glyphs to cache
+    :param glyph_source: the location of glyph files
+    :return: None
+    """
     regex = re.compile(r'[^.]+\.(jpg|png)$')
     for glyph_index, glyph in enumerate(glyph_set):
         # Load directory
@@ -82,12 +82,9 @@ def initialize_glyph_cache(glyph_set, glyph_source):
 
 def get_glyph_family():
     """
-    Return the identifier used by a glyph family
-    :return:
+    Return a random glyph family identifier.
+    :return: string the glyph family identifier
     """
-    # for glyph_index, glyph in enumerate(glyph_set):
-        # get_glyph_file(glyph, glyph_source)
-
     glyph_dictionary = random.choice(list(get_glyph_file.cache))
     glyph_family = random.choice(list(get_glyph_file.cache[glyph_dictionary]))
     return glyph_family
@@ -113,25 +110,25 @@ def estimate_word_width(word, glyph_set, glyph_width_probabilities):
 
     return int(width)
 
-def trim_padding(img, value = 255):
+def get_glyph_bounding_box(glyph_image_original, value = 255):
     """
-    Trim rows and columns containing the specified value.
-    :param img:  2D digit array
-    :param value: which value should be trimmed
-    :return: np.array trimmed digit
+    Given a glyph image, return a bounding box encompassing the glyph.
+    :param glyph_image_original: grayscale image of the glyph
+    :return: (x, y, width, height) bounding box as tuple
     """
-    # mask_row = np.all(np.equal(img, value), axis=1)
-    # dst = img[~mask_row]
+    glyph_image_original = ~np.equal(glyph_image_original, value)
 
-    dst = img.copy()
+    x = glyph_image_original.any(axis=0)
+    y = glyph_image_original.any(axis=1)
 
-    mask_col = np.all(np.equal(dst, value), axis=0)
-    dst = dst[:, ~mask_col]
+    x = np.where(x == True)[0]
+    y = np.where(y == True)[0]
 
-    if dst.shape[0] == 0 or dst.shape[1] == 0:
-        return img
+    if x.size == 0 or y.size == 0:
+        return (0, 0, glyph_image_original.shape[0], glyph_image_original.shape[1])
 
-    return dst
+    return (x[0], y[0], max(x[-1] - x[0], 1), max(y[-1] - y[0], 1))
+
 
 def synthesize(args):
     """
@@ -169,6 +166,9 @@ def synthesize(args):
         return True
     text = list(filter(known_words, text))
 
+    if config['glyph_color'] == 'constant':
+        color = np.random.randint(128, size=3)
+
     for i in range(count):
         start_time = time.time()
 
@@ -193,39 +193,53 @@ def synthesize(args):
         # Randomly select a glyph family
         glyph_family = get_glyph_family()
 
+        if config['glyph_color'] == 'per_document':
+            color = np.random.randint(128, size=3)
         formatted_text = ''
         left_margin = background_config['regions'][0][0]
         x_start = left_margin
         y_start = background_config['regions'][0][1] + 25
         line_height = background_config['line_height']
         number_of_words_on_line = 0
-        yml_data = []
+        yml_data = {
+            'meta': {
+                'glyph_family': glyph_family,
+            },
+            'content': [],
+        }
         for word_index, word in enumerate(words):
             # Generate glyphs for the word and determine word width
             word_data = {
                 'text': word,
                 'glyphs': [],
             }
+            if config['glyph_color'] == 'per_word':
+                color = np.random.randint(128, size=3)
             word_width = 0
             glyphs = []
             character_length = len(word)
             for character_index, character in enumerate(word):
-                glyph_image_x = get_character_image(character, glyph_source, glyph_family)
+                glyph_image = get_character_image(character, glyph_source, glyph_family)
 
                 # Apply thinning and blurring
                 if background_config['dilate'] > 0:
                     kernel = np.ones((background_config['dilate'], background_config['dilate']), np.uint8)
-                    glyph_image_x = cv2.dilate(glyph_image_x, kernel)
+                    glyph_image = cv2.dilate(glyph_image, kernel)
                 if background_config['blur'] > 0:
-                    glyph_image_x = cv2.blur(glyph_image_x, (background_config['blur'], background_config['blur']))
+                    glyph_image = cv2.blur(glyph_image, (background_config['blur'], background_config['blur']))
 
-                glyph_image = trim_padding(glyph_image_x)
+                glyph_bounding_box = get_glyph_bounding_box(glyph_image)
                 glyph_image = cv2.cvtColor(glyph_image, cv2.COLOR_GRAY2BGR)
                 # TODO(tom.rochette@coreteks.org): Simulate colored pen
                 # TODO(tom.rochette@coreteks.org): Apply other transforms (scale, rotation, skew, shear, elastic transform)
 
-                glyphs.append([word_width, character, glyph_image])
-                word_width += glyph_image.shape[1]
+                if config['glyph_color'] == 'per_glyph':
+                    color = np.random.randint(128, size=3)
+                tint = np.array([255, 255, 255]) - color
+                glyph_image = np.abs(np.abs((glyph_image / 255) - 1) * tint - 255).astype(np.uint8)
+
+                glyphs.append([word_width, character, glyph_bounding_box, glyph_image])
+                word_width += glyph_bounding_box[2]
                 # Random spacing between glyphs
                 if character_index + 1 != character_length:
                     word_width += random.randrange(-5, 10)
@@ -250,15 +264,20 @@ def synthesize(args):
             number_of_words_on_line += 1
 
             # Stamp glyph
-            for x, glyph, glyph_image in glyphs:
+            for x, glyph, glyph_bounding_box, glyph_image in glyphs:
                 # As x can be negative, we don't want to go lower than the left_margin for the first word on a new line
                 x_min = max(left_margin, x_start + x)
-                x_max = x_min + glyph_image.shape[1]
+                x_max = x_min + glyph_bounding_box[2]
                 y_min = y_start
                 y_max = y_min + glyph_image.shape[0]
 
+                glyph_x_min = glyph_bounding_box[0]
+                glyph_x_max = glyph_x_min + glyph_bounding_box[2]
+                glyph_y_min = 0
+                glyph_y_max = glyph_image.shape[0]
+
                 image_roi = image[y_min:y_max, x_min:x_max].astype(np.uint16)
-                glyph_image_roi = glyph_image.astype(np.uint16)
+                glyph_image_roi = glyph_image[glyph_y_min:glyph_y_max, glyph_x_min:glyph_x_max].astype(np.uint16)
 
                 # We multiply the glyph image with the image at the stamping location, which has the effect of keeping
                 # the image as is (when the glyph image pixel is 255) or replacing it with the glyph (when the glyph pixel
@@ -267,10 +286,10 @@ def synthesize(args):
 
                 word_data['glyphs'].append({
                     'glyph': glyph,
-                    'x': x_min,
-                    'y': y_min,
-                    'width': glyph_image.shape[1],
-                    'height': glyph_image.shape[0],
+                    'x': int(x_min),
+                    'y': int(y_min + glyph_bounding_box[1]),
+                    'width': int(glyph_bounding_box[2]),
+                    'height': int(glyph_bounding_box[3]),
                 })
 
             x_start += word_width
@@ -278,12 +297,14 @@ def synthesize(args):
             # Random spacing between words
             x_start += random.randrange(-10, 10)
 
-            yml_data.append(word_data)
+            yml_data['content'].append(word_data)
 
-        # Compute sha1 of the image to prevent multiple with the same string but different content from being overwritten
+        # Compute sha1 of the image to generate a unique identifier
         sha1 = hashlib.sha1()
         sha1.update(image.data)
-        cv2.imwrite(os.path.join(target_directory, sha1.hexdigest() + '.jpg'), image)
+
+        if args.image:
+            cv2.imwrite(os.path.join(target_directory, sha1.hexdigest() + '.jpg'), image)
 
         if args.txt:
             with open(os.path.join(target_directory, sha1.hexdigest() + '.txt'), 'w') as f:
@@ -306,8 +327,9 @@ if __name__ == '__main__':
     parser.add_argument('--text_source', default='source.txt', help='Text file to use as source of content (default: source.txt)')
     parser.add_argument('--glyph_source', default='glyphs', help='Directory containing glyphs to stamp onto the generated images (default: glyphs)')
     parser.add_argument('--target_directory', default='generated', help='Directory where to store generated images (default: generated)')
-    parser.add_argument('--txt', action='store_true', help='Generate the associated text in a txt file (default: False)')
-    parser.add_argument('--yml', action='store_true', help='Generate the associated data (glyph + bounding box (top left x, y + width/height) in a yml file (default: False)')
+    parser.add_argument('--image', action='store_true', help='Generate the image (default: False)')
+    parser.add_argument('--txt', action='store_true', help='Generate the text in a txt file (default: False)')
+    parser.add_argument('--yml', action='store_true', help='Generate the data (glyph + bounding box (top left x, y + width/height) in a yml file (default: False)')
     parser.add_argument('--config', default='config.yml', help='Configuration file containing the background details (default: config.yml)')
 
     args = parser.parse_args()
